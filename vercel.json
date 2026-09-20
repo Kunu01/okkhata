@@ -1,6 +1,6 @@
 {
   "framework": "vite",
-  "installCommand": "rm -f package-lock.json && npm install",
+  "installCommand": "npm install && npm i @rollup/rollup-linux-x64-gnu --no-save",
   "buildCommand": "npm run build -w @okkhata/client",
   "outputDirectory": "client/dist",
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
