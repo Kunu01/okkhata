@@ -1,6 +1,6 @@
 {
   "framework": "vite",
-  "installCommand": "npm install",
+  "installCommand": "rm -f package-lock.json && npm install",
   "buildCommand": "npm run build -w @okkhata/client",
   "outputDirectory": "client/dist",
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
