@@ -23,6 +23,9 @@ export function createApp(options: { verifyGoogle?: Parameters<typeof createAuth
       res.set('Access-Control-Expose-Headers', 'X-CSRF-Token');
       res.set('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
     }
+    if (req.cookies['okkhata_csrf']) {
+      res.set('X-CSRF-Token', req.cookies['okkhata_csrf']);
+    }
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
   });
