@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { googleIdentity, type GoogleIdentity } from './google.js';
 
 import { Audit, Business, Challenge, Session, User } from './models.js';
+import { connectPendingCustomers } from './shared.js';
 import { authenticate, clearSession, createSession, digest, email, ensure, limit, mobile, publicUser, random, rate, sha, sharedProfile, hashPassword, verifyPassword } from './security.js';
 import { sendMail } from './mail.js';
 export function createAuthRouter(verifyGoogle: (token: string) => Promise<GoogleIdentity> = googleIdentity) {
@@ -80,6 +81,7 @@ auth.post('/google/complete', async (req, res) => {
     await Business.create([{ ownerId: user._id, name: body.name, phone: body.mobile, email: c.email }], { session });
     await Audit.create([{ actorId: user._id, action: 'GOOGLE_ACCOUNT_CREATED', resourceId: String(user._id) }], { session });
   });
+  await connectPendingCustomers(String(user._id));
   await createSession(req, res, String(user._id)); res.status(201).json({ user: publicUser(user) });
 });
 
@@ -161,6 +163,7 @@ auth.post('/profile-change/verify', authenticate, async (req, res) => {
     await Session.deleteMany({ userId: user._id, _id: { $ne: req.auth!.session._id } }, { session });
     await Audit.create([{ actorId: user._id, action: 'CONTACT_CHANGED', detail: c.payload.kind }], { session });
   });
+  if (c.payload.kind === 'mobile') await connectPendingCustomers(String(user._id));
   res.json({ user: publicUser(user) });
   void sendMail(c.payload.oldEmail, 'Your OkKhata contact details changed', 'Your ' + c.payload.kind + ' was updated. Other device sessions were signed out.').catch(() => {});
 });

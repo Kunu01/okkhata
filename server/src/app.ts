@@ -12,6 +12,14 @@ export function createApp(options: { verifyGoogle?: Parameters<typeof createAuth
   const app = express(); app.disable('x-powered-by');
   app.use(helmet({ crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' }, contentSecurityPolicy: { directives: { 'img-src': ["'self'", 'data:', 'blob:'], 'connect-src': ["'self'", 'https://*.googleapis.com', 'https://*.firebaseapp.com', 'https://*.firebaseio.com'], 'frame-src': ['https://*.firebaseapp.com'], 'style-src': ["'self'", "'unsafe-inline'"] } } }));
   app.use(express.json({ limit: '100kb' }), cookieParser());
+  app.use((req, res, next) => {
+    const start = process.hrtime.bigint();
+    res.on('finish', () => {
+      const durationMs = Number(process.hrtime.bigint() - start) / 1e6;
+      console.log(`${req.method} ${req.originalUrl} ${res.statusCode} ${durationMs.toFixed(2)}ms`);
+    });
+    next();
+  });
   app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   app.use('/api', (req, res, next) => {
     const origin = req.headers.origin;

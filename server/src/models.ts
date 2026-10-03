@@ -35,25 +35,25 @@ export const Customer = define('Customer', {
   businessId: { type: oid, required: true }, name: { type: String, required: true }, mobile: String, email: String,
   address: String, note: String, dueDate: Date, archived: { type: Boolean, default: false },
   balance: { type: Number, default: 0 }, photo: Schema.Types.Mixed, linkedUserId: oid,
-}, [[{ businessId: 1, archived: 1, name: 1 }], [{ businessId: 1, linkedUserId: 1 }, { unique: true, partialFilterExpression: { linkedUserId: { $type: 'objectId' } } }]]);
+}, [[{ businessId: 1, archived: 1, name: 1 }], [{ businessId: 1, linkedUserId: 1 }, { unique: true, partialFilterExpression: { linkedUserId: { $type: 'objectId' } } }], [{ businessId: 1, mobile: 1 }]]);
 export const Entry = define('Entry', {
   businessId: { type: oid, required: true }, customerId: { type: oid, required: true },
   kind: { type: String, enum: ['given', 'received', 'reversal'], required: true },
   amount: { type: Number, required: true }, delta: Number, note: String, date: Date,
   actorId: oid, idempotencyKey: String, requestHash: String, reversalOf: oid, billId: oid,
   sourceEntryId: oid, attachmentId: oid, action: String,
-}, [[{ businessId: 1, idempotencyKey: 1 }, { unique: true }], [{ sourceEntryId: 1 }, { unique: true, sparse: true }], [{ reversalOf: 1 }, { unique: true, sparse: true }], [{ businessId: 1, customerId: 1, date: -1 }]]);
+}, [[{ businessId: 1, idempotencyKey: 1 }, { unique: true }], [{ sourceEntryId: 1 }, { unique: true, sparse: true }], [{ reversalOf: 1 }, { unique: true, sparse: true }], [{ businessId: 1, customerId: 1, date: -1, createdAt: -1, _id: -1 }], [{ businessId: 1, date: -1, createdAt: -1, _id: -1 }]]);
 export const Attachment = define('Attachment', { ownerId: oid, entryId: oid, asset: Schema.Types.Mixed });
 export const Product = define('Product', {
   businessId: { type: oid, required: true }, name: String, sku: String, price: Number, cost: Number,
   stock: { type: Number, default: 0 }, minimum: { type: Number, default: 5 }, unit: { type: String, default: 'pcs' },
-}, [[{ businessId: 1, sku: 1 }, { unique: true }]]);
+}, [[{ businessId: 1, sku: 1 }, { unique: true }], [{ businessId: 1, name: 1 }]]);
 export const StockMovement = define('StockMovement', { businessId: oid, productId: oid, quantity: Number, reason: String, actorId: oid, key: String }, [[{ businessId: 1, key: 1 }, { unique: true }]]);
 export const Bill = define('Bill', {
   businessId: oid, customerId: oid, number: String, items: [Schema.Types.Mixed], subtotal: Number,
   tax: Number, total: Number, dueDate: Date, note: String, idempotencyKey: String, requestHash: String,
-}, [[{ businessId: 1, number: 1 }, { unique: true }], [{ businessId: 1, idempotencyKey: 1 }, { unique: true }]]);
-export const Notification = define('Notification', { businessId: oid, userId: oid, title: String, body: String, href: String, readAt: Date, eventKey: String }, [[{ userId: 1, eventKey: 1 }, { unique: true }]]);
+}, [[{ businessId: 1, number: 1 }, { unique: true }], [{ businessId: 1, idempotencyKey: 1 }, { unique: true }], [{ businessId: 1, createdAt: -1 }]]);
+export const Notification = define('Notification', { businessId: oid, userId: oid, title: String, body: String, href: String, readAt: Date, eventKey: String }, [[{ userId: 1, eventKey: 1 }, { unique: true }], [{ userId: 1, createdAt: -1 }]]);
 export const PaymentRequest = define('PaymentRequest', {
   businessId: { type: oid, required: true }, customerId: { type: oid, required: true },
   amount: { type: Number, required: true }, currency: { type: String, default: 'INR' },

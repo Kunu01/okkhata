@@ -2,6 +2,7 @@ import { newId } from './id';
 import { useEffect, useRef, useState } from 'react';
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSummary } from './hooks';
 import { ArrowDownLeft, ArrowUpRight, Bell, BookOpen, CalendarDays, ChartNoAxesCombined, Check, ChevronDown, CircleHelp, FileText, LayoutDashboard, LogOut, Menu, Package, Plus, Search, Settings, ShieldCheck, Sparkles, Users, X, WifiOff, LockKeyhole } from 'lucide-react';
 import { api, ApiError, localDateTime, money, patch, post, toMinor } from './api';
 import { EntryAttachment, mediaUrl } from './images';
@@ -12,7 +13,7 @@ import AuthPage from './AuthPage';
 import { Dashboard, Customers, CustomerDetail, Transactions, Bills, Inventory, Reports, Notifications } from './pages';
 import SettingsPage, { palettes } from './SettingsPage';
 import { LockScreen } from './lock';
-import type { User, Workspace } from './types';
+import type { User, WorkspaceSummary, Customer } from './types';
 import { LanguageLayer, languageOptions } from './i18n';
 const nav = [
   { to: '/dashboard', label: 'Overview', icon: LayoutDashboard }, { to: '/customers', label: 'Customers', icon: Users, feature: 'customers' as const },
@@ -21,11 +22,11 @@ const nav = [
 ];
 export default function App() {
   const navigate = useNavigate(), location = useLocation(), cache = useQueryClient();
-  const session = useQuery<{ user: User; business: Workspace['business'] }>({ queryKey: ['session'], queryFn: () => api('/auth/session'), retry: false });
+  const session = useQuery<{ user: User; business: WorkspaceSummary['business'] }>({ queryKey: ['session'], queryFn: () => api('/auth/session'), retry: false });
   const user = session.data?.user, demo = !user;
   const featureOn = (feature: keyof User['featureToggles']) => demo ? feature === 'customers' || feature === 'transactions' : !!user?.featureToggles?.[feature];
-  const workspace = useQuery<Workspace>({ queryKey: ['workspace', user?.id], queryFn: () => api('/workspace'), enabled: !!user, refetchInterval: 30000 });
-  const data = workspace.data || (demo ? sample : { ...sample, business: session.data!.business, customers: [], entries: [], products: [], bills: [], paymentRequests: [], notifications: [], monthly: [], totals: { receivable: 0, advance: 0, customers: 0 } });
+  const workspace = useSummary(!!user);
+  const data = workspace.data || (demo ? sample : { business: session.data!.business, customers: 0, receivable: 0, advance: 0, unreadNotifications: 0, recentTransactions: [], overdueCustomers: [] });
   const [dialog, setDialog] = useState<DialogConfig | null>(null), [message, setMessage] = useState(''), [search, setSearch] = useState(''), [menu, setMenu] = useState(false), [offline, setOffline] = useState(!navigator.onLine);
   const [showMobileSearch, setShowMobileSearch] = useState(false);
   const [locked, setLocked] = useState(() => { const last = localStorage.getItem('okkhata-activity'); return !!last && Date.now() - parseInt(last) > 5 * 60 * 1000; });
@@ -70,25 +71,53 @@ export default function App() {
     setDialog({ layout: 'customer', title: 'Add a customer', subtitle: 'A new relationship, a clear account.', submitLabel: 'Add customer', fields: [
       { name: 'name', label: 'Customer name', required: true, placeholder: 'e.g. Rahul Sharma' }, { name: 'mobile', label: 'Mobile number', type: 'tel', placeholder: '+91 98765 43210' },
       { name: 'email', label: 'Email (optional)', type: 'email' }, { name: 'address', label: 'Address (optional)' }, { name: 'note', label: 'Note (optional)', type: 'textarea' },
-    ], onSubmit: async f => { await post('/customers', f); await refresh(); toast('Customer added. You’re ready to make an entry.'); } });
+    ], onSubmit: async f => { await post('/customers', f); await Promise.all([cache.invalidateQueries({ queryKey: ['customers'] }), cache.invalidateQueries({ queryKey: ['summary'] })]); toast('Customer added. You’re ready to make an entry.'); } });
   };
-  const addEntry = (kind: 'given' | 'received', customerId?: string, action: 'udhar' | 'advance' | 'payment' = kind === 'given' ? 'udhar' : 'payment') => {
+  const addEntry = async (kind: 'given' | 'received', customerId?: string, action: 'udhar' | 'advance' | 'payment' = kind === 'given' ? 'udhar' : 'payment') => {
     if (!requireAccount()) return;
-    if (!data.customers.some(c => !c.archived)) { addCustomer(); return; }
-    const customer = customerId ? data.customers.find(c => c._id === customerId) : null;
+    let customerList: any[] = [];
+    if (!customerId) {
+      const res = await api('/customers?limit=1000');
+      if (!res.items.length) { addCustomer(); return; }
+      customerList = res.items.filter((c: any) => !c.archived);
+    }
     const idempotencyKey = newId();
-    setDialog({ layout: 'entry', title: customer ? `Adding to ${customer.name}` : action === 'advance' ? 'Record an advance' : action === 'udhar' ? 'Record udhar' : 'Record a payment', subtitle: kind === 'given' ? 'This increases the outstanding balance.' : 'This reduces the outstanding balance.', submitLabel: 'Save entry', fields: [
-      ...(customerId ? [] : [{ name: 'customerId', label: 'Customer', required: true, options: data.customers.filter(c => !c.archived).map(c => ({ value: c._id, label: `${c.name} · ${money(c.balance)}` })) }]),
+    setDialog({ layout: 'entry', title: customerId ? `Adding entry` : action === 'advance' ? 'Record an advance' : action === 'udhar' ? 'Record udhar' : 'Record a payment', subtitle: kind === 'given' ? 'This increases the outstanding balance.' : 'This reduces the outstanding balance.', submitLabel: 'Save entry', fields: [
+      ...(customerId ? [] : [{ name: 'customerId', label: 'Customer', required: true, options: customerList.map(c => ({ value: c._id, label: `${c.name} · ${money(c.balance)}` })) }]),
       { name: 'amount', label: 'Amount (₹)', required: true, type: 'number', min: '0.01', step: '0.01', placeholder: '0.00' }, { name: 'date', label: 'Date and time (your local time)', type: 'datetime-local', value: localDateTime(), max: localDateTime(), required: true }, { name: 'note', label: 'Note (optional)', type: 'textarea', placeholder: 'What was this for?' },
-    ], children: <><EntryAttachment/><Calculator/></>, onSubmit: async f => { const amount = toMinor(f.amount); post('/entries', { ...f, customerId: customerId || f.customerId, attachmentId: f.attachmentId || undefined, date: new Date(f.date).toISOString(), amount, kind, action, idempotencyKey }).then(async () => { await refresh(); toast('Entry saved. Your customer balance is up to date.'); }).catch(err => toast('Failed to save entry: ' + err.message)); } });
+    ], children: <><EntryAttachment/><Calculator/></>, onSubmit: async f => { 
+      const amount = toMinor(f.amount); 
+      const custId = customerId || f.customerId;
+      const delta = kind === 'given' ? amount : -amount;
+      const optimisticEntry = { _id: 'temp-' + Date.now(), customerId: custId, kind, action, amount, delta, note: f.note, date: new Date(f.date).toISOString(), createdAt: new Date().toISOString() };
+      
+      const prevSummary = cache.getQueryData<WorkspaceSummary>(['summary']);
+      if (prevSummary) {
+        cache.setQueryData(['summary'], { ...prevSummary, receivable: prevSummary.receivable + delta, recentTransactions: [optimisticEntry, ...prevSummary.recentTransactions].slice(0, 10) });
+      }
+      const prevCustomer = cache.getQueryData<Customer>(['customers', custId]);
+      if (prevCustomer) {
+        cache.setQueryData(['customers', custId], { ...prevCustomer, balance: prevCustomer.balance + delta });
+      }
+      
+      post('/entries', { ...f, customerId: custId, attachmentId: f.attachmentId || undefined, date: optimisticEntry.date, amount, kind, action, idempotencyKey })
+        .then(async () => { 
+          await Promise.all([cache.invalidateQueries({ queryKey: ['summary'] }), cache.invalidateQueries({ queryKey: ['customers'] }), cache.invalidateQueries({ queryKey: ['entries'] })]); 
+          toast('Entry saved. Your customer balance is up to date.'); 
+        })
+        .catch(err => { 
+          if (prevSummary) cache.setQueryData(['summary'], prevSummary);
+          if (prevCustomer) cache.setQueryData(['customers', custId], prevCustomer);
+          toast('Failed to save entry: ' + err.message); 
+        }); 
+    } });
   };
-  const remind = (id: string) => {
+  const remind = (customerName: string, customerMobile: string, balance: number, dueDate?: string) => {
     if (!requireAccount()) return;
-    const c = data.customers.find(c => c._id === id)!;
-    if (c.balance <= 0) { toast('This customer has no outstanding payment.'); return; }
-    if (!/^\+?[1-9]\d{7,14}$/.test(c.mobile.replace(/[\s()-]/g, ''))) { toast('Add a valid customer phone number with country code first.'); return; }
-    const text = `Hello ${c.name},\n\nA friendly reminder from ${data.business.name}. Your pending amount is ${money(c.balance)}.${c.dueDate ? ` Due date: ${new Date(c.dueDate).toLocaleDateString('en-IN')}.` : ''}\n\nPlease make the payment when convenient. Thank you!\n${data.business.name}`;
-    setDialog({ title: 'Remind on WhatsApp', subtitle: 'Review the reminder. You’ll press Send inside WhatsApp.', fields: [{ name: 'message', label: 'Your message', type: 'textarea', value: text, required: true }], submitLabel: 'Continue in WhatsApp', onSubmit: async f => { window.open(`https://wa.me/${c.mobile.replace(/\D/g, '')}?text=${encodeURIComponent(f.message)}`, '_blank', 'noopener,noreferrer'); toast('Continue in WhatsApp to send your message.'); } });
+    if (balance <= 0) { toast('This customer has no outstanding payment.'); return; }
+    if (!/^\+?[1-9]\d{7,14}$/.test(customerMobile.replace(/[\s()-]/g, ''))) { toast('Add a valid customer phone number with country code first.'); return; }
+    const text = `Hello ${customerName},\n\nA friendly reminder from ${data.business.name}. Your pending amount is ${money(balance)}.${dueDate ? ` Due date: ${new Date(dueDate).toLocaleDateString('en-IN')}.` : ''}\n\nPlease make the payment when convenient. Thank you!\n${data.business.name}`;
+    setDialog({ title: 'Remind on WhatsApp', subtitle: 'Review the reminder. You’ll press Send inside WhatsApp.', fields: [{ name: 'message', label: 'Your message', type: 'textarea', value: text, required: true }], submitLabel: 'Continue in WhatsApp', onSubmit: async f => { window.open(`https://wa.me/${customerMobile.replace(/\D/g, '')}?text=${encodeURIComponent(f.message)}`, '_blank', 'noopener,noreferrer'); toast('Continue in WhatsApp to send your message.'); } });
   };
   const authRoute = ['/signup', '/login'].includes(location.pathname);
   if (authRoute) return <AuthPage key={location.pathname} signup={location.pathname === '/signup'}/>;
@@ -98,10 +127,10 @@ export default function App() {
   return <AppContext.Provider value={{ data, user, demo, refresh, toast, open: setDialog, requireAccount, addCustomer, addEntry, remind, search }}><LanguageLayer language={user?.language || 'en'}/><div className={`app-shell ${location.pathname.startsWith('/customers/') ? 'ledger-screen' : ''}`}>
     {menu && <button className="sidebar-overlay" aria-label="Close navigation" onClick={() => setMenu(false)}/>}
     <aside className={`sidebar ${menu ? 'is-open' : ''}`}><Link to="/" className="brand"><img src="/icon.svg" alt=""/>ok<span>khata</span><i/></Link><button className="business-switch" onClick={() => navigate('/settings?tab=business')}><span className="business-icon">{data.business.logo ? <img crossOrigin="use-credentials" src={mediaUrl(data.business.logo.url)} alt=""/> : <BookOpen size={20}/>}</span><span><strong>{data.business.name}</strong><small>Business account</small></span><ChevronDown size={15}/></button>
-    <div className="nav-label">WORKSPACE</div><nav>{nav.filter(n => !n.feature || featureOn(n.feature)).map(n => <NavLink key={n.to} to={n.to} end={n.to === '/'}><n.icon size={19}/><span>{n.label}</span>{n.to === '/customers' && <em>{data.totals.customers}</em>}</NavLink>)}</nav>
-    <div className="nav-label tools-label">PREFERENCES</div><nav>{featureOn('notifications') && <NavLink to="/notifications"><Bell size={19}/><span>Notifications</span>{data.notifications.some(n => !n.readAt) && <i className="notification-dot"/>}</NavLink>}<NavLink to="/settings"><Settings size={19}/><span>Settings</span></NavLink></nav>
+    <div className="nav-label">WORKSPACE</div><nav>{nav.filter(n => !n.feature || featureOn(n.feature)).map(n => <NavLink key={n.to} to={n.to} end={n.to === '/'}><n.icon size={19}/><span>{n.label}</span>{n.to === '/customers' && <em>{data.customers}</em>}</NavLink>)}</nav>
+    <div className="nav-label tools-label">PREFERENCES</div><nav>{featureOn('notifications') && <NavLink to="/notifications"><Bell size={19}/><span>Notifications</span>{data.unreadNotifications > 0 && <i className="notification-dot"/>}</NavLink>}<NavLink to="/settings"><Settings size={19}/><span>Settings</span></NavLink></nav>
     <div className="sidebar-bottom"><button className="account-button" onClick={() => navigate('/settings')}><Avatar name={user?.name || 'Kunal Patel'} photo={user?.photo}/><span><strong>{user?.name || 'Your workspace'}</strong><small>{demo ? 'Sample preview' : 'Business owner'}</small></span><ChevronDown size={15}/></button></div></aside>
-    <div className="main-shell"><header className="mobile-brand-header mobile-only">{showMobileSearch ? <div className="search-field" style={{flex:1,marginRight:'10px',borderRadius:'8px',background:'var(--surface)'}}><Search size={18}/><input autoFocus aria-label="Search customers" placeholder="Search customers..." value={search} onChange={e => { setSearch(e.target.value); if (location.pathname !== '/customers') navigate('/customers'); }}/></div> : <div className="brand-logo"><img src="/icon.svg" alt=""/>ok<span>khata</span></div>}<div style={{display:'flex',alignItems:'center',gap:'4px'}}><button className="icon-button" aria-label="Toggle search" onClick={() => setShowMobileSearch(!showMobileSearch)}><Search size={19}/></button>{!showMobileSearch && <Link to="/notifications" className="icon-button notification-button" aria-label="Notifications"><Bell size={19}/>{data.notifications.some(n => !n.readAt) && <i/>}</Link>}</div></header><header className="topbar desktop-only"><div className="header-left"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMenu(true)}><Menu size={21}/></button><span className="breadcrumb">{currentNav.label}</span></div><div className="topbar-right"><label className="global-search"><Search size={17}/><input aria-label="Search" placeholder="Search…" value={search} onChange={e => { setSearch(e.target.value); if (!['/customers', '/transactions', '/inventory'].includes(location.pathname)) navigate('/customers'); }}/></label><span className={`sync-status ${offline ? 'is-offline' : ''}`}>{offline ? <WifiOff size={14}/> : <span className="live-dot"/>}{offline ? 'Offline' : demo ? 'Sample data' : workspace.isFetching ? 'Updating…' : 'Connected'}</span><Link to="/notifications" className="icon-button notification-button" aria-label="Notifications"><Bell size={19}/>{data.notifications.some(n => !n.readAt) && <i/>}</Link><button className="top-avatar" aria-label="My profile" onClick={() => navigate('/settings')}><Avatar name={user?.name || 'Kunal Patel'} photo={user?.photo}/></button></div></header>
+    <div className="main-shell"><header className="mobile-brand-header mobile-only">{showMobileSearch ? <div className="search-field" style={{flex:1,marginRight:'10px',borderRadius:'8px',background:'var(--surface)'}}><Search size={18}/><input autoFocus aria-label="Search customers" placeholder="Search customers..." value={search} onChange={e => { setSearch(e.target.value); if (location.pathname !== '/customers') navigate('/customers'); }}/></div> : <div className="brand-logo"><img src="/icon.svg" alt=""/>ok<span>khata</span></div>}<div style={{display:'flex',alignItems:'center',gap:'4px'}}><button className="icon-button" aria-label="Toggle search" onClick={() => setShowMobileSearch(!showMobileSearch)}><Search size={19}/></button>{!showMobileSearch && <Link to="/notifications" className="icon-button notification-button" aria-label="Notifications"><Bell size={19}/>{data.unreadNotifications > 0 && <i/>}</Link>}</div></header><header className="topbar desktop-only"><div className="header-left"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMenu(true)}><Menu size={21}/></button><span className="breadcrumb">{currentNav.label}</span></div><div className="topbar-right"><label className="global-search"><Search size={17}/><input aria-label="Search" placeholder="Search…" value={search} onChange={e => { setSearch(e.target.value); if (!['/customers', '/transactions', '/inventory'].includes(location.pathname)) navigate('/customers'); }}/></label><span className={`sync-status ${offline ? 'is-offline' : ''}`}>{offline ? <WifiOff size={14}/> : <span className="live-dot"/>}{offline ? 'Offline' : demo ? 'Sample data' : workspace.isFetching ? 'Updating…' : 'Connected'}</span><Link to="/notifications" className="icon-button notification-button" aria-label="Notifications"><Bell size={19}/>{data.unreadNotifications > 0 && <i/>}</Link><button className="top-avatar" aria-label="My profile" onClick={() => navigate('/settings')}><Avatar name={user?.name || 'Kunal Patel'} photo={user?.photo}/></button></div></header>
     {demo && <div className="demo-banner"><span><Sparkles size={14}/> You’re exploring a sample workspace.</span><Link to="/signup">Create your own khata <ArrowRightIcon/></Link><Link to="/login" className="demo-signin">Sign in</Link></div>}
     {offline && <div className="connection-banner">You’re offline. Reconnect to save or refresh your records.</div>}
     {workspace.error && <div className="connection-banner" role="alert">Unable to refresh your records. <button className="text-button" onClick={() => void workspace.refetch()}>Try again</button></div>}

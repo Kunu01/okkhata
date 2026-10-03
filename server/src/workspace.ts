@@ -10,7 +10,7 @@ workspace.use(authenticate, rate('workspace', 180));
 const text = (max = 150) => z.string().trim().max(max);
 const customerSchema = z.object({ name: text(80).min(1), mobile: z.union([z.literal(''), mobile]).default(''), email: z.union([z.email(), z.literal('')]).default(''), address: text(300).default(''), note: text(500).default(''), dueDate: z.union([z.iso.datetime(), z.literal('')]).optional() }).strict();
 workspace.get('/workspace', async (req, res) => {
-  await connectPendingCustomers(req.auth!.userId);
+  // Kept temporarily for backward compatibility, but without connectPendingCustomers
   const businessId = req.auth!.business._id;
   const [customers, entries, products, bills, notifications, paymentRequests, totals, monthly] = await Promise.all([
     Customer.find({ businessId }).sort({ createdAt: -1 }).limit(500).lean(),
@@ -25,10 +25,99 @@ workspace.get('/workspace', async (req, res) => {
   const features = req.auth!.features;
   res.json({ business: req.auth!.business, customers: features.customers ? await enrichCustomers(customers) : [], entries: features.transactions ? entries : [], products: features.inventory ? products : [], bills: features.bills ? bills : [], notifications: features.notifications ? notifications : [], paymentRequests: features.transactions ? paymentRequests : [], totals: totals[0] || { receivable: 0, advance: 0, customers: 0 }, monthly: features.reports ? monthly : [], recordLimit: 500 });
 });
+
+workspace.post('/customers/sync', async (req, res) => {
+  await connectPendingCustomers(req.auth!.userId);
+  res.json({ ok: true });
+});
+
+workspace.get('/workspace/summary', async (req, res) => {
+  const businessId = req.auth!.business._id;
+  const [totals, unreadNotifications, recentTransactions, overdueCustomers] = await Promise.all([
+    Customer.aggregate([{ $match: { businessId } }, { $group: { _id: null, receivable: { $sum: { $max: ['$balance', 0] } }, advance: { $sum: { $max: [{ $multiply: ['$balance', -1] }, 0] } }, customers: { $sum: 1 } } }]),
+    Notification.countDocuments({ userId: req.auth!.userId, readAt: null }),
+    Entry.find({ businessId }).sort({ date: -1, createdAt: -1 }).limit(10).lean(),
+    Customer.find({ businessId, balance: { $gt: 0 }, dueDate: { $lt: new Date() } }).sort({ dueDate: 1 }).limit(3).lean()
+  ]);
+  const summary = totals[0] || { receivable: 0, advance: 0, customers: 0 };
+  res.json({
+    customers: summary.customers,
+    receivable: summary.receivable,
+    advance: summary.advance,
+    unreadNotifications,
+    recentTransactions,
+    overdueCustomers: overdueCustomers || [],
+  });
+});
+
+workspace.get('/reports/monthly', requireFeature('reports'), async (req, res) => {
+  const businessId = req.auth!.business._id;
+  const monthly = await Entry.aggregate([
+    { $match: { businessId, date: { $gte: new Date(Date.now() - 180 * 86400000) } } },
+    { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$date', timezone: 'Asia/Kolkata' } }, given: { $sum: { $cond: [{ $gt: ['$delta', 0] }, '$delta', 0] } }, received: { $sum: { $cond: [{ $lt: ['$delta', 0] }, { $multiply: ['$delta', -1] }, 0] } } } },
+    { $sort: { _id: 1 } }
+  ]);
+  res.json(monthly);
+});
+
+workspace.get('/entries', requireFeature('transactions'), async (req, res) => {
+  const query = z.object({ page: z.coerce.number().int().min(1).max(10000).default(1), limit: z.coerce.number().int().min(1).max(100).default(25), cursor: z.string().optional() }).parse(req.query);
+  const filter = { businessId: req.auth!.business._id };
+  if (query.cursor) {
+    (filter as any)._id = { $lt: query.cursor }; // simple cursor implementation
+  }
+  const items = await Entry.find(filter).sort({ date: -1, createdAt: -1, _id: -1 }).skip(query.cursor ? 0 : (query.page - 1) * query.limit).limit(query.limit).lean();
+  res.json({ items, hasMore: items.length === query.limit, nextCursor: items.length > 0 ? (items[items.length - 1] as any)._id : null });
+});
+
+workspace.get('/products', requireFeature('inventory'), async (req, res) => {
+  const query = z.object({ page: z.coerce.number().int().min(1).max(10000).default(1), limit: z.coerce.number().int().min(1).max(100).default(25), q: z.string().max(100).default('') }).parse(req.query);
+  const filter = { businessId: req.auth!.business._id, ...(query.q ? { name: { $regex: query.q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } } : {}) };
+  const items = await Product.find(filter).sort({ name: 1 }).skip((query.page - 1) * query.limit).limit(query.limit).lean();
+  res.json({ items, hasMore: items.length === query.limit });
+});
+
+workspace.get('/bills', requireFeature('bills'), async (req, res) => {
+  const query = z.object({ page: z.coerce.number().int().min(1).max(10000).default(1), limit: z.coerce.number().int().min(1).max(100).default(25) }).parse(req.query);
+  const filter = { businessId: req.auth!.business._id };
+  const items = await Bill.find(filter).sort({ createdAt: -1 }).skip((query.page - 1) * query.limit).limit(query.limit).lean();
+  res.json({ items, hasMore: items.length === query.limit });
+});
+
+workspace.get('/notifications/unread-count', requireFeature('notifications'), async (req, res) => {
+  res.json({ count: await Notification.countDocuments({ userId: req.auth!.userId, readAt: null }) });
+});
+
+workspace.get('/notifications', requireFeature('notifications'), async (req, res) => {
+  const query = z.object({ page: z.coerce.number().int().min(1).max(10000).default(1), limit: z.coerce.number().int().min(1).max(100).default(25) }).parse(req.query);
+  const items = await Notification.find({ userId: req.auth!.userId }).sort({ createdAt: -1 }).skip((query.page - 1) * query.limit).limit(query.limit).lean();
+  res.json({ items, hasMore: items.length === query.limit });
+});
 workspace.get('/customers', async (req, res) => {
-  const query = z.object({ q: z.string().max(100).default(''), page: z.coerce.number().int().min(1).max(10000).default(1) }).parse(req.query);
-  const filter = { businessId: req.auth!.business._id, name: { $regex: query.q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } };
-  res.json({ items: await enrichCustomers(await Customer.find(filter).sort({ name: 1 }).skip((query.page - 1) * 50).limit(50).lean()), total: await Customer.countDocuments(filter) });
+  const query = z.object({ q: z.string().max(100).default(''), filter: z.string().default('all'), sort: z.string().default('recent'), page: z.coerce.number().int().min(1).max(10000).default(1), limit: z.coerce.number().int().min(1).max(100).default(25) }).parse(req.query);
+  const filter: any = { businessId: req.auth!.business._id };
+  if (query.q) filter.$or = [{ name: { $regex: query.q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } }, { mobile: { $regex: query.q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } }];
+  if (query.filter === 'archived') filter.archived = true;
+  else {
+    filter.archived = { $ne: true };
+    if (query.filter === 'outstanding') filter.balance = { $gt: 0 };
+    else if (query.filter === 'settled') filter.balance = 0;
+    else if (query.filter === 'overdue') { filter.balance = { $gt: 0 }; filter.dueDate = { $lt: new Date() }; }
+  }
+  let sortObj: any = { createdAt: -1 };
+  if (query.sort === 'name') sortObj = { name: 1 };
+  else if (query.sort === 'balance') sortObj = { balance: -1 };
+
+  const items = await enrichCustomers(await Customer.find(filter).select('_id name mobile email balance archived dueDate linkedUserId photo').sort(sortObj).skip((query.page - 1) * query.limit).limit(query.limit).lean());
+  res.json({ items, hasMore: items.length === query.limit });
+});
+
+workspace.get('/customers/:id', async (req, res) => {
+  const id = objectId.parse(req.params.id);
+  const c = await Customer.findOne({ _id: id, businessId: req.auth!.business._id }).lean();
+  ensure(c, 404, 'Customer not found.');
+  const [enriched] = await enrichCustomers([c]);
+  res.json(enriched);
 });
 workspace.use('/bills', requireFeature('bills'));
 workspace.use('/products', requireFeature('inventory'));
@@ -72,10 +161,14 @@ workspace.delete('/customers/:id', async (req, res) => {
 });
 
 workspace.get('/customers/:id/entries', async (req, res) => {
-  const id = objectId.parse(req.params.id), page = z.coerce.number().int().min(1).default(1).parse(req.query.page);
+  const id = objectId.parse(req.params.id), query = z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(100).default(25), cursor: z.string().optional() }).parse(req.query);
   ensure(await Customer.exists({ _id: id, businessId: req.auth!.business._id }), 404, 'Customer not found.');
   const filter = { customerId: id, businessId: req.auth!.business._id };
-  res.json({ items: await Entry.find(filter).sort({ date: -1 }).skip((page - 1) * 100).limit(100), total: await Entry.countDocuments(filter) });
+  if (query.cursor) {
+    (filter as any)._id = { $lt: query.cursor };
+  }
+  const items = await Entry.find(filter).sort({ date: -1, createdAt: -1, _id: -1 }).skip(query.cursor ? 0 : (query.page - 1) * query.limit).limit(query.limit).lean();
+  res.json({ items, hasMore: items.length === query.limit, nextCursor: items.length > 0 ? (items[items.length - 1] as any)._id : null });
 });
 workspace.post('/entries', async (req, res) => { res.status(201).json(await postEntry(String(req.auth!.business._id), req.auth!.userId, req.body)); });
 workspace.post('/entries/:id/reverse', async (req, res) => {
@@ -85,9 +178,11 @@ workspace.post('/entries/:id/reverse', async (req, res) => {
 const upiIdSchema = z.string().trim().regex(/^[A-Za-z0-9._-]{2,128}@[A-Za-z0-9.-]{2,64}$/, 'Enter a valid UPI ID, for example yourname@bank.');
 const paymentRequestSchema = z.object({ customerId: objectId, amount: amountSchema, note: text(200).default(''), idempotencyKey: z.string().uuid() }).strict();
 workspace.get('/payment-requests', async (req, res) => {
-  const customerId = req.query.customerId ? objectId.parse(req.query.customerId) : undefined;
+  const query = z.object({ page: z.coerce.number().int().min(1).max(10000).default(1), limit: z.coerce.number().int().min(1).max(100).default(25), customerId: z.string().optional() }).parse(req.query);
+  const customerId = query.customerId ? objectId.parse(query.customerId) : undefined;
   const filter = { businessId: req.auth!.business._id, ...(customerId ? { customerId } : {}) };
-  res.json(await PaymentRequest.find(filter).sort({ createdAt: -1 }).limit(200).lean());
+  const items = await PaymentRequest.find(filter).sort({ createdAt: -1 }).skip((query.page - 1) * query.limit).limit(query.limit).lean();
+  res.json({ items, hasMore: items.length === query.limit });
 });
 workspace.post('/payment-requests', async (req, res) => {
   const body = paymentRequestSchema.parse(req.body), business: any = await Business.findById(req.auth!.business._id).lean();

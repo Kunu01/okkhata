@@ -48,7 +48,7 @@ test('only verified Google onboarding creates accounts, mobile is unique, comple
   const pending = await agent.post('/api/v1/auth/google').set('Origin', origin).send({ token: googleToken(email) });
   assert.equal(pending.status, 200); assert.equal(pending.body.needsMobile, true);
   assert.equal((await agent.get('/api/v1/workspace')).status, 401); assert.equal(await User.countDocuments({ email }), 0);
-  const input = { challengeId: pending.body.challengeId, continuation: pending.body.continuation, name: 'Signup Test', mobile: '9899999999' };
+  const input = { challengeId: pending.body.challengeId, continuation: pending.body.continuation, name: 'Signup Test', mobile: '9899999999', passcode: '123456' };
   assert.equal((await agent.post('/api/v1/auth/google/complete').set('Origin', origin).send({ ...input, mobile: '+14155552671' })).status, 400);
   const verified = await agent.post('/api/v1/auth/google/complete').set('Origin', origin).send(input);
   assert.equal(verified.status, 201, JSON.stringify(verified.body)); assert.equal(verified.body.user.mobile, '+919899999999');
@@ -161,6 +161,7 @@ test('historical entries and reversals become shared when the recipient register
   const first = await a.send('post', '/entries', { customerId: c.body._id, kind: 'given', amount: 10000, idempotencyKey: crypto.randomUUID() });
   await a.send('post', `/entries/${first.body._id}/reverse`, { note: 'Corrected entry', idempotencyKey: crypto.randomUUID() });
   const b = await owner(); await User.updateOne({ _id: b.u._id }, { $set: { mobile: phone } });
+  await b.send('post', '/customers/sync', {});
   const ws = await b.agent.get('/api/v1/workspace'); assert.equal(ws.status, 200, JSON.stringify(ws.body));
   assert.equal(ws.body.entries.length, 2); assert.equal(ws.body.customers[0].balance, 0);
   assert.equal((await b.agent.get('/api/v1/workspace')).body.entries.length, 2);
