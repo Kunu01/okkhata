@@ -20,7 +20,7 @@ function googleToken(email: string, uid = email) { const token = crypto.randomBy
 let mongo: MongoMemoryReplSet, passwordHash: string, sequence = 0;
 const password = 'A-strong-test-password!26';
 const origin = 'http://localhost:5173';
-const getCsrf = (res: any) => (res.headers['set-cookie'] as string[]).find(s => s.startsWith('okkhata_csrf='))!.split(';')[0]!.split('=')[1]!;
+const getCsrf = (res: any) => (res.headers['set-cookie'] as string[]).find(s => s.startsWith('okkhata_csrf_v2='))!.split(';')[0]!.split('=')[1]!;
 before(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 }, binary: { downloadDir: path.join(local, 'mongo-binaries') } });
   await mongoose.connect(mongo.getUri('okkhata-tests')); await Promise.all(models.map(m => m.init())); passwordHash = await hashPassword(password);

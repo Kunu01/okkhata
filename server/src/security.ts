@@ -24,10 +24,10 @@ export async function createSession(req: Request, res: Response, userId: string)
   if (req.cookies[sessionCookie]) await Session.deleteOne({ tokenHash: sha(req.cookies[sessionCookie]) });
   await Session.create({ userId, tokenHash: sha(token), csrfHash: sha(csrf), device: String(req.headers['user-agent'] || 'Unknown browser').slice(0, 250), lastSeen: new Date(), authenticatedAt: new Date(), expiresAt: new Date(Date.now() + 30 * 86400000) });
   res.cookie(sessionCookie, token, { ...cookieOpts, maxAge: 30 * 86400000 });
-  res.cookie('okkhata_csrf', csrf, { ...cookieOpts, httpOnly: false, maxAge: 30 * 86400000 });
+  res.cookie('okkhata_csrf_v2', csrf, { ...cookieOpts, httpOnly: false, maxAge: 30 * 86400000 });
   res.set('X-CSRF-Token', csrf);
 }
-export function clearSession(res: Response) { res.clearCookie(sessionCookie, cookieOpts); res.clearCookie('okkhata_csrf', { ...cookieOpts, httpOnly: false }); }
+export function clearSession(res: Response) { res.clearCookie(sessionCookie, cookieOpts); res.clearCookie('okkhata_csrf_v2', { ...cookieOpts, httpOnly: false }); }
 export function sameOrigin(req: Request, _res: Response, next: NextFunction) {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
     const origin = req.headers.origin;
