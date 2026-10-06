@@ -12,6 +12,8 @@ import { AppContext, type DialogConfig } from './context';
 import AuthPage from './AuthPage';
 import { Dashboard, Customers, CustomerDetail, Transactions, Bills, Inventory, Reports, Notifications } from './pages';
 import SettingsPage, { palettes } from './SettingsPage';
+import { LandingPage, PrivacyPolicy, TermsConditions, ThankYouPage } from './Marketing';
+import './marketing.css';
 import { LockScreen } from './lock';
 import type { User, WorkspaceSummary, Customer } from './types';
 import { LanguageLayer, languageOptions } from './i18n';
@@ -123,6 +125,15 @@ export default function App() {
   if (authRoute) return <AuthPage key={location.pathname} signup={location.pathname === '/signup'}/>;
   if (session.isPending) return <div className="boot"><img src="/icon.svg" alt="OkKhata"/><p>Getting your khata ready…</p></div>;
   if (locked && user) return <LockScreen userId={user.id} name={user.name} onUnlock={() => setLocked(false)} onLogout={async () => { await post('/auth/logout'); cache.clear(); setLocked(false); navigate('/login'); }}/>;
+  
+  const isMarketingRoute = ['/privacy', '/terms', '/thank-you'].includes(location.pathname) || (!user && location.pathname === '/');
+  if (isMarketingRoute) {
+    if (location.pathname === '/') return <LandingPage />;
+    if (location.pathname === '/privacy') return <PrivacyPolicy />;
+    if (location.pathname === '/terms') return <TermsConditions />;
+    if (location.pathname === '/thank-you') return <ThankYouPage />;
+  }
+
   const currentNav = nav.find(n => n.to === location.pathname) || { label: location.pathname.startsWith('/customers/') ? 'Customer account' : location.pathname === '/notifications' ? 'Notifications' : 'Settings' };
   return <AppContext.Provider value={{ data, user, demo, refresh, toast, open: setDialog, requireAccount, addCustomer, addEntry, remind, search }}><LanguageLayer language={user?.language || 'en'}/><div className={`app-shell ${location.pathname.startsWith('/customers/') ? 'ledger-screen' : ''}`}>
     {menu && <button className="sidebar-overlay" aria-label="Close navigation" onClick={() => setMenu(false)}/>}
